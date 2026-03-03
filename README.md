@@ -1,6 +1,9 @@
 # ESP-01 Rack Environment Monitor
 
-![WeAct 0.96" Display](https://raw.githubusercontent.com/CheshirCa/WeActDisplay/refs/heads/main/USB_Display.jpg)
+![Hardware](https://github.com/CheshirCa/rack-environment-monitor-esp01/blob/main/doc/Hardware.jpg)
+![Main UI](https://github.com/CheshirCa/rack-environment-monitor-esp01/blob/main/doc/MainUI.jpg)
+![Status UI](https://github.com/CheshirCa/rack-environment-monitor-esp01/blob/main/doc/Status.jpg)
+![Logs UI](https://github.com/CheshirCa/rack-environment-monitor-esp01/blob/main/doc/Logs.jpg)
 
 > **[English](#english) | [Русский](#russian)**
 
