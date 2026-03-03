@@ -1,0 +1,102 @@
+# Prometheus Alerting Rules — ESP-01 Climate Sensor
+# Place this file in the same directory as prometheus.yml
+# Reference it via rule_files: in prometheus.yml
+# ====================================================
+
+groups:
+  - name: esp01_climate
+    interval: 60s
+    rules:
+
+      # ---- Temperature alerts ----
+      - alert: TemperatureHigh
+        expr: esp01_temperature_celsius > 28
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High temperature on {{ $labels.sensor }}"
+          description: >
+            Temperature is {{ $value | printf "%.1f" }}°C
+            (threshold: 28°C) for more than 5 minutes.
+
+      - alert: TemperatureCritical
+        expr: esp01_temperature_celsius > 35
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CRITICAL temperature on {{ $labels.sensor }}"
+          description: >
+            Temperature is {{ $value | printf "%.1f" }}°C
+            (threshold: 35°C). Immediate action required.
+
+      - alert: TemperatureLow
+        expr: esp01_temperature_celsius < 18
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low temperature on {{ $labels.sensor }}"
+          description: >
+            Temperature is {{ $value | printf "%.1f" }}°C
+            (threshold: 18°C).
+
+      # ---- Humidity alerts ----
+      - alert: HumidityHigh
+        expr: esp01_humidity_percent > 60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High humidity on {{ $labels.sensor }}"
+          description: >
+            Humidity is {{ $value | printf "%.1f" }}%
+            (threshold: 60%). Risk of condensation.
+
+      - alert: HumidityCritical
+        expr: esp01_humidity_percent > 70
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CRITICAL humidity on {{ $labels.sensor }}"
+          description: >
+            Humidity is {{ $value | printf "%.1f" }}%
+            (threshold: 70%). Risk of condensation on equipment.
+
+      - alert: HumidityLow
+        expr: esp01_humidity_percent < 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low humidity on {{ $labels.sensor }}"
+          description: >
+            Humidity is {{ $value | printf "%.1f" }}%
+            (threshold: 30%). Risk of static discharge.
+
+      # ---- Sensor hardware alerts ----
+      - alert: SensorHardwareError
+        expr: esp01_sensor_ok == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Sensor hardware error on {{ $labels.sensor }}"
+          description: >
+            Device {{ $labels.device }} on {{ $labels.sensor }}
+            is not responding. Check TRRS cable and sensor board.
+
+      # ---- Device availability ----
+      - alert: SensorDown
+        expr: up{job="esp01_climate"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Sensor unreachable: {{ $labels.instance }}"
+          description: >
+            ESP-01 sensor at {{ $labels.instance }} is not responding
+            to Prometheus scrapes for more than 2 minutes.
+            Check network and USB power supply.

@@ -1,0 +1,439 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Zabbix Template — ESP-01 Climate Sensor
+  ========================================
+  Compatible with: Zabbix 5.4, 6.0, 6.2, 6.4
+
+  Import:
+    Configuration -> Templates -> Import
+    Select this XML file -> Import
+
+  Usage after import:
+    1. Go to Configuration -> Hosts -> select your host.
+    2. Templates tab -> Link new template ->
+       search "ESP-01 Climate Sensor" -> Add -> Update.
+    3. Set the host-level macro {$SENSOR_IP} to the
+       IP address of your sensor board.
+       Host -> Macros -> {$SENSOR_IP} = 192.168.1.101
+
+  The template creates:
+    - 1 master HTTP Agent item (raw JSON fetch)
+    - 4 dependent items (temperature, humidity, pressure, health)
+    - 6 triggers (high/low temp, high/low humidity, sensor error)
+    - 2 graphs (temperature, humidity)
+
+  One template instance per physical sensor board.
+-->
+<zabbix_export>
+  <version>5.4</version>
+
+  <groups>
+    <group>
+      <name>Environmental Sensors</name>
+    </group>
+  </groups>
+
+  <templates>
+    <template>
+      <template>ESP-01 Climate Sensor</template>
+      <name>ESP-01 Climate Sensor</name>
+      <description>
+        WiFi environmental sensor based on ESP-01 with BMP280 and AHT20.
+        Monitors temperature, humidity and atmospheric pressure.
+        Designed for server rooms and network cabinets.
+
+        Required host macro:
+          {$SENSOR_IP} — IP address of the sensor board
+                         (e.g. 192.168.1.101)
+
+        Optional macros (override per host if needed):
+          {$TEMP_WARN_HIGH}  — temperature warning high  (default 28)
+          {$TEMP_ERR_HIGH}   — temperature error high    (default 35)
+          {$TEMP_WARN_LOW}   — temperature warning low   (default 18)
+          {$TEMP_ERR_LOW}    — temperature error low     (default 15)
+          {$HUM_WARN_HIGH}   — humidity warning high     (default 60)
+          {$HUM_ERR_HIGH}    — humidity error high       (default 70)
+          {$HUM_WARN_LOW}    — humidity warning low      (default 30)
+          {$HUM_ERR_LOW}     — humidity error low        (default 20)
+      </description>
+      <groups>
+        <group>
+          <name>Environmental Sensors</name>
+        </group>
+      </groups>
+
+      <!-- ==================== MACROS ==================== -->
+      <macros>
+        <macro>
+          <macro>{$SENSOR_IP}</macro>
+          <value>192.168.1.100</value>
+          <description>IP address of the ESP-01 sensor board. Override per host.</description>
+        </macro>
+        <macro>
+          <macro>{$TEMP_WARN_HIGH}</macro>
+          <value>28</value>
+          <description>Temperature warning threshold high (C)</description>
+        </macro>
+        <macro>
+          <macro>{$TEMP_ERR_HIGH}</macro>
+          <value>35</value>
+          <description>Temperature error threshold high (C)</description>
+        </macro>
+        <macro>
+          <macro>{$TEMP_WARN_LOW}</macro>
+          <value>18</value>
+          <description>Temperature warning threshold low (C)</description>
+        </macro>
+        <macro>
+          <macro>{$TEMP_ERR_LOW}</macro>
+          <value>15</value>
+          <description>Temperature error threshold low (C)</description>
+        </macro>
+        <macro>
+          <macro>{$HUM_WARN_HIGH}</macro>
+          <value>60</value>
+          <description>Humidity warning threshold high (%)</description>
+        </macro>
+        <macro>
+          <macro>{$HUM_ERR_HIGH}</macro>
+          <value>70</value>
+          <description>Humidity error threshold high (%)</description>
+        </macro>
+        <macro>
+          <macro>{$HUM_WARN_LOW}</macro>
+          <value>30</value>
+          <description>Humidity warning threshold low (%)</description>
+        </macro>
+        <macro>
+          <macro>{$HUM_ERR_LOW}</macro>
+          <value>20</value>
+          <description>Humidity error threshold low (%)</description>
+        </macro>
+      </macros>
+
+      <!-- ==================== ITEMS ==================== -->
+      <items>
+
+        <!-- Master item: fetch full JSON from /zabbix endpoint -->
+        <item>
+          <name>Climate raw JSON</name>
+          <type>HTTP_AGENT</type>
+          <key>climate.json</key>
+          <history>1d</history>
+          <trends>0</trends>
+          <value_type>TEXT</value_type>
+          <url>http://{$SENSOR_IP}/zabbix</url>
+          <request_method>GET</request_method>
+          <retrieve_mode>BODY</retrieve_mode>
+          <timeout>10s</timeout>
+          <delay>60s</delay>
+          <description>
+            Fetches the full JSON payload from the sensor.
+            All other items depend on this master item.
+          </description>
+          <tags>
+            <tag><tag>component</tag><value>raw</value></tag>
+          </tags>
+        </item>
+
+        <!-- Dependent: temperature -->
+        <item>
+          <name>Temperature</name>
+          <type>DEPENDENT</type>
+          <key>climate.temperature</key>
+          <history>30d</history>
+          <trends>365d</trends>
+          <value_type>FLOAT</value_type>
+          <units>C</units>
+          <master_item>
+            <key>climate.json</key>
+          </master_item>
+          <description>Air temperature reported by AHT20 sensor.</description>
+          <preprocessing>
+            <step>
+              <type>JSONPATH</type>
+              <parameters>
+                <parameter>$.temperature</parameter>
+              </parameters>
+              <error_handler>DISCARD_VALUE</error_handler>
+            </step>
+            <step>
+              <type>CHECK_NOT_SUPPORTED</type>
+              <parameters>
+                <parameter></parameter>
+              </parameters>
+            </step>
+          </preprocessing>
+          <tags>
+            <tag><tag>component</tag><value>temperature</value></tag>
+          </tags>
+        </item>
+
+        <!-- Dependent: humidity -->
+        <item>
+          <name>Humidity</name>
+          <type>DEPENDENT</type>
+          <key>climate.humidity</key>
+          <history>30d</history>
+          <trends>365d</trends>
+          <value_type>FLOAT</value_type>
+          <units>%</units>
+          <master_item>
+            <key>climate.json</key>
+          </master_item>
+          <description>Relative humidity reported by AHT20 sensor.</description>
+          <preprocessing>
+            <step>
+              <type>JSONPATH</type>
+              <parameters>
+                <parameter>$.humidity</parameter>
+              </parameters>
+              <error_handler>DISCARD_VALUE</error_handler>
+            </step>
+          </preprocessing>
+          <tags>
+            <tag><tag>component</tag><value>humidity</value></tag>
+          </tags>
+        </item>
+
+        <!-- Dependent: pressure -->
+        <item>
+          <name>Pressure</name>
+          <type>DEPENDENT</type>
+          <key>climate.pressure</key>
+          <history>30d</history>
+          <trends>365d</trends>
+          <value_type>FLOAT</value_type>
+          <units>hPa</units>
+          <master_item>
+            <key>climate.json</key>
+          </master_item>
+          <description>Atmospheric pressure reported by BMP280 sensor.</description>
+          <preprocessing>
+            <step>
+              <type>JSONPATH</type>
+              <parameters>
+                <parameter>$.pressure</parameter>
+              </parameters>
+              <error_handler>DISCARD_VALUE</error_handler>
+            </step>
+          </preprocessing>
+          <tags>
+            <tag><tag>component</tag><value>pressure</value></tag>
+          </tags>
+        </item>
+
+        <!-- Dependent: overall sensor health -->
+        <item>
+          <name>Sensor health (all OK)</name>
+          <type>DEPENDENT</type>
+          <key>climate.all_ok</key>
+          <history>7d</history>
+          <trends>0</trends>
+          <value_type>UNSIGNED</value_type>
+          <master_item>
+            <key>climate.json</key>
+          </master_item>
+          <description>
+            1 = all sensors responding and values within valid range.
+            0 = at least one sensor error or out-of-range value.
+          </description>
+          <preprocessing>
+            <step>
+              <type>JSONPATH</type>
+              <parameters>
+                <parameter>$.all_ok</parameter>
+              </parameters>
+              <error_handler>DISCARD_VALUE</error_handler>
+            </step>
+            <step>
+              <type>BOOL_TO_DECIMAL</type>
+              <parameters>
+                <parameter></parameter>
+              </parameters>
+            </step>
+          </preprocessing>
+          <tags>
+            <tag><tag>component</tag><value>health</value></tag>
+          </tags>
+        </item>
+
+      </items>
+
+      <!-- ==================== TRIGGERS ==================== -->
+      <triggers>
+
+        <trigger>
+          <expression>{ESP-01 Climate Sensor:climate.temperature.last()}>{$TEMP_ERR_HIGH}</expression>
+          <name>Temperature critical high on {HOST.NAME}</name>
+          <priority>HIGH</priority>
+          <description>
+            Temperature has exceeded {$TEMP_ERR_HIGH} C.
+            Immediate action required — risk of hardware damage.
+          </description>
+          <tags>
+            <tag><tag>scope</tag><value>availability</value></tag>
+          </tags>
+        </trigger>
+
+        <trigger>
+          <expression>{ESP-01 Climate Sensor:climate.temperature.last()}>{$TEMP_WARN_HIGH}
+                  and {ESP-01 Climate Sensor:climate.temperature.last()}&lt;={$TEMP_ERR_HIGH}</expression>
+          <name>Temperature high on {HOST.NAME}</name>
+          <priority>WARNING</priority>
+          <description>
+            Temperature is above {$TEMP_WARN_HIGH} C.
+            Check cooling and airflow.
+          </description>
+          <tags>
+            <tag><tag>scope</tag><value>availability</value></tag>
+          </tags>
+        </trigger>
+
+        <trigger>
+          <expression>{ESP-01 Climate Sensor:climate.temperature.last()}&lt;{$TEMP_ERR_LOW}</expression>
+          <name>Temperature critical low on {HOST.NAME}</name>
+          <priority>HIGH</priority>
+          <description>Temperature has dropped below {$TEMP_ERR_LOW} C.</description>
+          <tags>
+            <tag><tag>scope</tag><value>availability</value></tag>
+          </tags>
+        </trigger>
+
+        <trigger>
+          <expression>{ESP-01 Climate Sensor:climate.temperature.last()}&lt;{$TEMP_WARN_LOW}
+                  and {ESP-01 Climate Sensor:climate.temperature.last()}>={$TEMP_ERR_LOW}</expression>
+          <name>Temperature low on {HOST.NAME}</name>
+          <priority>WARNING</priority>
+          <description>Temperature is below {$TEMP_WARN_LOW} C.</description>
+          <tags>
+            <tag><tag>scope</tag><value>availability</value></tag>
+          </tags>
+        </trigger>
+
+        <trigger>
+          <expression>{ESP-01 Climate Sensor:climate.humidity.last()}>{$HUM_ERR_HIGH}</expression>
+          <name>Humidity critical high on {HOST.NAME}</name>
+          <priority>HIGH</priority>
+          <description>
+            Humidity has exceeded {$HUM_ERR_HIGH}%.
+            Risk of condensation on equipment.
+          </description>
+          <tags>
+            <tag><tag>scope</tag><value>availability</value></tag>
+          </tags>
+        </trigger>
+
+        <trigger>
+          <expression>{ESP-01 Climate Sensor:climate.humidity.last()}>{$HUM_WARN_HIGH}
+                  and {ESP-01 Climate Sensor:climate.humidity.last()}&lt;={$HUM_ERR_HIGH}</expression>
+          <name>Humidity high on {HOST.NAME}</name>
+          <priority>WARNING</priority>
+          <description>Humidity is above {$HUM_WARN_HIGH}%.</description>
+          <tags>
+            <tag><tag>scope</tag><value>availability</value></tag>
+          </tags>
+        </trigger>
+
+        <trigger>
+          <expression>{ESP-01 Climate Sensor:climate.humidity.last()}&lt;{$HUM_ERR_LOW}</expression>
+          <name>Humidity critical low on {HOST.NAME}</name>
+          <priority>WARNING</priority>
+          <description>
+            Humidity has dropped below {$HUM_ERR_LOW}%.
+            Risk of electrostatic discharge.
+          </description>
+          <tags>
+            <tag><tag>scope</tag><value>availability</value></tag>
+          </tags>
+        </trigger>
+
+        <trigger>
+          <expression>{ESP-01 Climate Sensor:climate.all_ok.last()}=0</expression>
+          <name>Sensor hardware error on {HOST.NAME}</name>
+          <priority>HIGH</priority>
+          <description>
+            One or more physical sensors (AHT20 / BMP280) are reporting
+            an error or returning values outside the valid range.
+            Check TRRS cable connection and sensor board.
+            Open http://{$SENSOR_IP}/ for details.
+          </description>
+          <tags>
+            <tag><tag>scope</tag><value>availability</value></tag>
+          </tags>
+        </trigger>
+
+        <trigger>
+          <expression>{ESP-01 Climate Sensor:climate.json.nodata(300)}=1</expression>
+          <name>Sensor not responding on {HOST.NAME}</name>
+          <priority>HIGH</priority>
+          <description>
+            No data received from the sensor for 5 minutes.
+            Check network connectivity and power supply (USB).
+          </description>
+          <tags>
+            <tag><tag>scope</tag><value>availability</value></tag>
+          </tags>
+        </trigger>
+
+      </triggers>
+
+      <!-- ==================== GRAPHS ==================== -->
+      <graphs>
+
+        <graph>
+          <name>Temperature — {HOST.NAME}</name>
+          <height>200</height>
+          <ymin_type_1>FIXED</ymin_type_1>
+          <ymax_type_1>FIXED</ymax_type_1>
+          <yaxismin>10</yaxismin>
+          <yaxismax>50</yaxismax>
+          <graph_items>
+            <graph_item>
+              <color>F44336</color>
+              <item>
+                <host>ESP-01 Climate Sensor</host>
+                <key>climate.temperature</key>
+              </item>
+            </graph_item>
+          </graph_items>
+        </graph>
+
+        <graph>
+          <name>Humidity — {HOST.NAME}</name>
+          <height>200</height>
+          <ymin_type_1>FIXED</ymin_type_1>
+          <ymax_type_1>FIXED</ymax_type_1>
+          <yaxismin>0</yaxismin>
+          <yaxismax>100</yaxismax>
+          <graph_items>
+            <graph_item>
+              <color>2196F3</color>
+              <item>
+                <host>ESP-01 Climate Sensor</host>
+                <key>climate.humidity</key>
+              </item>
+            </graph_item>
+          </graph_items>
+        </graph>
+
+        <graph>
+          <name>Pressure — {HOST.NAME}</name>
+          <height>200</height>
+          <graph_items>
+            <graph_item>
+              <color>4CAF50</color>
+              <item>
+                <host>ESP-01 Climate Sensor</host>
+                <key>climate.pressure</key>
+              </item>
+            </graph_item>
+          </graph_items>
+        </graph>
+
+      </graphs>
+
+    </template>
+  </templates>
+
+</zabbix_export>

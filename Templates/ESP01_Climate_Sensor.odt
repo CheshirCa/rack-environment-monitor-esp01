@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PRTG Device Template — ESP-01 Climate Sensor
+  =============================================
+  Installation:
+    Copy this file to the PRTG devicetemplates folder:
+    C:\Program Files (x86)\PRTG Network Monitor\devicetemplates\
+
+  Usage:
+    1. Add a Device in PRTG with the sensor IP address as host.
+    2. Right-click the Device -> "Auto-Discovery" ->
+       "Run Auto-Discovery with Template" ->
+       select "ESP-01 Climate Sensor".
+    3. PRTG will automatically create the HTTP Advanced sensor
+       with all three channels (Temperature, Humidity, Pressure).
+
+  Alternatively, apply the template manually:
+    Device settings -> "Device Template" -> select this template
+    -> click "Run Now".
+-->
+<devicetemplate id="esp01_climate_sensor"
+                name="ESP-01 Climate Sensor"
+                priority="3"
+                show="1"
+                deviceicon="Network">
+
+  <create id="1">
+    <sensortype id="httpadv">
+
+      <!-- Sensor display name -->
+      <name>Climate — Temperature / Humidity / Pressure</name>
+
+      <!-- Tags for filtering in PRTG -->
+      <tags>climate environmental temperature humidity pressure esp8266 esp01</tags>
+
+      <!-- Polling interval: 60 seconds -->
+      <interval>60</interval>
+      <intervalgroup>1</intervalgroup>
+
+      <!-- HTTP endpoint — %host is replaced with the device IP -->
+      <httpurl>http://%host/prtg</httpurl>
+
+      <!-- GET request, no POST body -->
+      <httpmethod>0</httpmethod>
+      <postdata></postdata>
+
+      <!-- No authentication on /prtg endpoint -->
+      <authentication>0</authentication>
+      <user></user>
+      <password></password>
+
+      <!-- Request timeout in seconds -->
+      <timeout>10</timeout>
+
+      <!-- Expected HTTP status code -->
+      <statuscode>200</statuscode>
+
+      <!-- Response must be valid XML -->
+      <checkssl>0</checkssl>
+
+      <!-- Channel definitions -->
+      <channels>
+
+        <channel>
+          <name>Temperature</name>
+          <unit>Temperature</unit>
+          <mode>Absolute</mode>
+          <issensorvalue>1</issensorvalue>
+          <showgraph>1</showgraph>
+          <showintable>1</showintable>
+          <limitmaxerror>35</limitmaxerror>
+          <limitmaxwarning>28</limitmaxwarning>
+          <limitminwarning>18</limitminwarning>
+          <limitminerror>15</limitminerror>
+          <limiterrormsg>Temperature out of safe range</limiterrormsg>
+          <limitwarningmsg>Temperature approaching limits</limitwarningmsg>
+          <limitmode>1</limitmode>
+          <decimalmode>2</decimalmode>
+        </channel>
+
+        <channel>
+          <name>Humidity</name>
+          <unit>Percent</unit>
+          <mode>Absolute</mode>
+          <issensorvalue>0</issensorvalue>
+          <showgraph>1</showgraph>
+          <showintable>1</showintable>
+          <limitmaxerror>70</limitmaxerror>
+          <limitmaxwarning>60</limitmaxwarning>
+          <limitminwarning>30</limitminwarning>
+          <limitminerror>20</limitminerror>
+          <limiterrormsg>Humidity out of safe range</limiterrormsg>
+          <limitwarningmsg>Humidity approaching limits</limitwarningmsg>
+          <limitmode>1</limitmode>
+          <decimalmode>2</decimalmode>
+        </channel>
+
+        <channel>
+          <name>Pressure</name>
+          <unit>Custom</unit>
+          <customunit>hPa</customunit>
+          <mode>Absolute</mode>
+          <issensorvalue>0</issensorvalue>
+          <showgraph>1</showgraph>
+          <showintable>1</showintable>
+          <limitmode>0</limitmode>
+          <decimalmode>2</decimalmode>
+        </channel>
+
+      </channels>
+
+    </sensortype>
+  </create>
+
+</devicetemplate>
