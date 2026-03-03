@@ -1,0 +1,87 @@
+# Prometheus configuration for ESP-01 Climate Sensor
+# =====================================================
+#
+# IMPORTANT: The ESP-01 firmware does not expose a native Prometheus
+# /metrics endpoint (it would not fit in 80 KB of RAM). Instead, use
+# the prometheus-community/json_exporter to convert the /zabbix JSON
+# endpoint into Prometheus text format.
+#
+# Install json_exporter:
+#   https://github.com/prometheus-community/json_exporter/releases
+#   docker pull prometheuscommunity/json-exporter
+#
+# Quick start with Docker:
+#   docker run -d --name json_exporter \
+#     -p 7979:7979 \
+#     -v /etc/json_exporter/config.yml:/config.yml \
+#     prometheuscommunity/json-exporter \
+#     --config.file /config.yml
+#
+# json_exporter config file (/etc/json_exporter/config.yml):
+# ----------------------------------------------------------
+# modules:
+#   esp01:
+#     metrics:
+#       - name: esp01_temperature_celsius
+#         path: "{ .temperature }"
+#         labels:
+#           sensor: "esp01"
+#       - name: esp01_humidity_percent
+#         path: "{ .humidity }"
+#         labels:
+#           sensor: "esp01"
+#       - name: esp01_pressure_hpa
+#         path: "{ .pressure }"
+#         labels:
+#           sensor: "esp01"
+#       - name: esp01_sensor_ok
+#         path: "{ .all_ok }"
+#         labels:
+#           sensor: "esp01"
+#           device: "aht20"
+# ----------------------------------------------------------
+#
+# After json_exporter is running, Prometheus scrapes it at:
+#   http://json-exporter-host:7979/probe?target=http://SENSOR_IP/zabbix&module=esp01
+#
+# =====================================================
+
+global:
+  scrape_interval:     60s
+  evaluation_interval: 60s
+
+rule_files:
+  - 'esp01_climate_alerts.yml'
+
+scrape_configs:
+
+  # Sensor 1 — Rack 1
+  - job_name: 'esp01_climate'
+    scrape_interval: 60s
+    scrape_timeout:  10s
+    metrics_path:    /probe
+    params:
+      module: [esp01]
+
+    static_configs:
+      - targets:
+          - 'http://192.168.1.101/zabbix'   # sensor 1 — Rack 1
+        labels:
+          location: 'Server Room'
+          cabinet:  'Rack 1'
+
+      # Add more sensors here:
+      # - targets:
+      #     - 'http://192.168.1.102/zabbix'
+      #   labels:
+      #     location: 'Server Room'
+      #     cabinet:  'Rack 2'
+
+    # Tell Prometheus to send each target URL to json_exporter
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 'json-exporter-host:7979'   # <-- change to your json_exporter host:port
