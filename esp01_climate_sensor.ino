@@ -1,7 +1,4 @@
 /*
- * ESP-01 WiFi Climate Sensor  v1.1
- *
- * What this sketch does:
  *   Reads temperature and humidity from an AHT20 sensor and atmospheric
  *   pressure from a BMP280 sensor over I2C. Serves the data over WiFi as
  *   a small web server with multiple output formats. Logs readings to flash
@@ -46,8 +43,8 @@
 // ============================================================
 
 #define FW_VERSION         "1.1"
-#define EEPROM_SIZE        320         // bytes reserved in flash for settings
-#define EEPROM_MAGIC       0xAD        // if this byte is wrong, settings are reset to defaults
+#define EEPROM_SIZE        352         // bytes reserved in flash for settings
+#define EEPROM_MAGIC       0xAE        // changed from 0xAD — forces re-init after DNS field was added
 #define SERIAL_BAUD        115200
 #define WIFI_TIMEOUT_MS    15000       // give up connecting after 15 s
 #define RECONNECT_MS       30000       // try to reconnect every 30 s when offline
@@ -92,6 +89,7 @@ struct Settings {
   char     ip[16];          // static IP; leave empty to use DHCP
   char     gateway[16];     // default gateway for static IP
   char     subnet[16];      // subnet mask for static IP
+  char     dns[16];         // primary DNS server; leave empty to use gateway as DNS
   char     sensorName[64];  // friendly name shown on the web page and in API responses
   char     token[32];       // optional bearer token protecting /status; empty = no auth
   char     ntpServer[64];   // NTP server hostname
@@ -658,14 +656,16 @@ void printMenu() {
   Serial.println(F(" 4. Set static IP  (empty = DHCP)"));
   Serial.println(F(" 5. Set subnet mask"));
   Serial.println(F(" 6. Set gateway"));
-  Serial.println(F(" 7. Set sensor name / location"));
-  Serial.println(F(" 8. Set /status token  (empty = open)"));
-  Serial.println(F(" 9. Set NTP server"));
-  Serial.println(F("10. Set UTC offset  (-12..+14)"));
-  Serial.println(F("11. Toggle logging  (on/off)"));
-  Serial.println(F("12. Force NTP sync now"));
-  Serial.println(F("13. Show sensor readings"));
-  Serial.println(F("14. List log files on FS"));
+  Serial.println(F(" 7. Set DNS server  (empty = use gateway)"));
+  Serial.println(F(" 8. Set sensor name / location"));
+  Serial.println(F(" 9. Set /status token  (empty = open)"));
+  Serial.println(F("10. Set NTP server"));
+  Serial.println(F("11. Set UTC offset  (-12..+14)"));
+  Serial.println(F("12. Toggle logging  (on/off)"));
+  Serial.println(F("13. Force NTP sync now"));
+  Serial.println(F("14. Show sensor readings"));
+  Serial.println(F("15. List log files on FS"));
+  Serial.println(F("16. Hard reset  (wipe all settings + format FS)"));
   Serial.println(F(" 0. Save and reboot"));
   Serial.println(F("Command > (enter number, press Enter):"));
 }
@@ -685,6 +685,7 @@ void printCurrentSettings() {
     Serial.print(F("IP          : ")); Serial.println(strlen(cfg.ip) ? cfg.ip : "DHCP (not connected)");
     Serial.print(F("Subnet      : ")); Serial.println(cfg.subnet);
     Serial.print(F("Gateway     : ")); Serial.println(cfg.gateway);
+    Serial.print(F("DNS         : ")); Serial.println(strlen(cfg.dns) ? cfg.dns : "use gateway");
   }
   Serial.print(F("NTP server  : ")); Serial.println(cfg.ntpServer);
   Serial.print(F("UTC offset  : ")); Serial.println((int)cfg.utcOffset);
@@ -781,28 +782,29 @@ void handleSerialMenu() {
     case 4:  Serial.print(F("IP (empty=DHCP): ")); readLine().toCharArray(cfg.ip, sizeof(cfg.ip)); Serial.println(F("OK")); break;
     case 5:  Serial.print(F("Subnet: ")); readLine().toCharArray(cfg.subnet, sizeof(cfg.subnet)); Serial.println(F("OK")); break;
     case 6:  Serial.print(F("Gateway: ")); readLine().toCharArray(cfg.gateway, sizeof(cfg.gateway)); Serial.println(F("OK")); break;
-    case 7:  Serial.print(F("Sensor name: ")); readLine().toCharArray(cfg.sensorName, sizeof(cfg.sensorName)); Serial.println(F("OK")); break;
-    case 8:  Serial.print(F("Token (empty=open): ")); readLine().toCharArray(cfg.token, sizeof(cfg.token)); Serial.println(F("OK")); break;
-    case 9:
+    case 7:  Serial.print(F("DNS (empty=use gateway): ")); readLine().toCharArray(cfg.dns, sizeof(cfg.dns)); Serial.println(F("OK")); break;
+    case 8:  Serial.print(F("Sensor name: ")); readLine().toCharArray(cfg.sensorName, sizeof(cfg.sensorName)); Serial.println(F("OK")); break;
+    case 9:  Serial.print(F("Token (empty=open): ")); readLine().toCharArray(cfg.token, sizeof(cfg.token)); Serial.println(F("OK")); break;
+    case 10:
       Serial.print(F("NTP server [pool.ntp.org]: "));
       s = readLine();
       if (s.length() > 0) s.toCharArray(cfg.ntpServer, sizeof(cfg.ntpServer));
       Serial.println(F("OK"));
       break;
-    case 10:
+    case 11:
       Serial.print(F("UTC offset (-12..+14): "));
       s = readLine();
       if (s.length() > 0) cfg.utcOffset = (int8_t)constrain(s.toInt(), -12, 14);
       Serial.print(F("UTC offset: ")); Serial.println((int)cfg.utcOffset);
       break;
-    case 11:
+    case 12:
       cfg.loggingEnabled = !cfg.loggingEnabled;
       Serial.print(F("Logging: ")); Serial.println(cfg.loggingEnabled ? F("ENABLED") : F("DISABLED"));
       break;
-    case 12:
+    case 13:
       syncNTP();
       break;
-    case 13:
+    case 14:
       // Read sensors and print a quick diagnostic report to the serial monitor
       readSensors();
       Serial.println(F("\n--- Sensors ---"));
@@ -818,7 +820,7 @@ void handleSerialMenu() {
       Serial.print(F("Pres  : ")); Serial.print(sens.pressure, 1);
       Serial.println(sens.presValid ? F(" hPa [OK]") : F(" hPa [OUT OF RANGE]"));
       break;
-    case 14: {
+    case 15: {
       Serial.println(F("\n--- Log files ---"));
       Dir dir = LittleFS.openDir("/");
       bool any = false;
@@ -833,13 +835,40 @@ void handleSerialMenu() {
       if (!any) Serial.println(F("  (no log files yet)"));
       break;
     }
+    case 16: {
+      // Hard reset: ask for confirmation before destroying everything
+      Serial.println(F("\n*** HARD RESET ***"));
+      Serial.println(F("This will erase ALL settings and ALL log files."));
+      Serial.print(F("Type YES to confirm, anything else to cancel: "));
+      String confirm = readLine();
+      if (confirm == "YES") {
+        Serial.println(F("Wiping EEPROM..."));
+        // Overwrite the entire EEPROM region with zeros; the bad magic byte
+        // ensures loadSettings() will re-apply defaults on next boot
+        EEPROM.begin(EEPROM_SIZE);
+        for (int i = 0; i < EEPROM_SIZE; i++) EEPROM.write(i, 0);
+        EEPROM.commit();
+        Serial.println(F("Formatting LittleFS..."));
+        if (LittleFS.format()) {
+          Serial.println(F("Format OK."));
+        } else {
+          Serial.println(F("Format FAILED -- reflash the firmware to recover."));
+        }
+        Serial.println(F("Done. Rebooting in 3 s..."));
+        delay(3000);
+        ESP.restart();
+      } else {
+        Serial.println(F("Cancelled."));
+      }
+      break;
+    }
     case 0:
       saveSettings();
       Serial.println(F("Saved. Rebooting..."));
       delay(2000); ESP.restart();
       break;
     default: break;
-  }
+  }  // end switch
   lastReconnMs = millis();  // prevent the reconnect timer from firing right after menu use
   printMenu();
 }
@@ -854,10 +883,12 @@ void connectWiFi() {
   WiFi.setAutoReconnect(false);  // we handle reconnects ourselves in loop()
   if (strlen(cfg.ip) > 0) {
     // Static IP: parse all three address fields and apply them before connecting
-    IPAddress ip, gw, sn;
-    if (ip.fromString(cfg.ip) && gw.fromString(cfg.gateway) && sn.fromString(cfg.subnet))
-      WiFi.config(ip, gw, sn);
-    else Serial.println(F("[WiFi] IP parse error, using DHCP."));
+    IPAddress ip, gw, sn, dns;
+    bool dnsOk = strlen(cfg.dns) > 0 && dns.fromString(cfg.dns);
+    if (ip.fromString(cfg.ip) && gw.fromString(cfg.gateway) && sn.fromString(cfg.subnet)) {
+      // If DNS is not set, fall back to using the gateway as DNS (common default)
+      WiFi.config(ip, gw, sn, dnsOk ? dns : gw);
+    } else Serial.println(F("[WiFi] IP parse error, using DHCP."));
   }
   WiFi.begin(cfg.ssid, cfg.password);
   Serial.print(F("[WiFi] Connecting"));
