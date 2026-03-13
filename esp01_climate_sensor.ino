@@ -37,12 +37,13 @@
 #include <EEPROM.h>            // persistent settings storage in flash
 #include <LittleFS.h>          // filesystem for CSV log files
 #include <time.h>              // POSIX time functions (used after NTP sync)
+#include <WiFiUdp.h>
 
 // ============================================================
 //  Constants
 // ============================================================
 
-#define FW_VERSION         "1.1"
+#define FW_VERSION         "1.2"
 #define EEPROM_SIZE        352         // bytes reserved in flash for settings
 #define EEPROM_MAGIC       0xAE        // changed from 0xAD — forces re-init after DNS field was added
 #define SERIAL_BAUD        115200
@@ -52,6 +53,19 @@
 #define LOG_INTERVAL_MS    300000UL    // write a log entry every 5 minutes
 #define NTP_SYNC_INTERVAL  3600000UL   // re-sync time with NTP every hour
 #define LOG_MAX_DAYS       31          // keep at most 31 daily CSV files
+
+// SNMP agent (SNMPv1 / SNMPv2c, GET only)
+// Uses Private Enterprise Number 99999 as a placeholder.
+// Register your own for free at: https://www.iana.org/form/pen
+#define SNMP_PORT         161          // standard SNMP UDP port
+#define SNMP_BUF_SZ       256          // shared RX/TX packet buffer; max response fits easily
+
+// OIDs exposed:
+//   1.3.6.1.2.1.1.1.0          sysDescr    OctetString  (sensor name + FW version)
+//   1.3.6.1.2.1.1.3.0          sysUpTime   TimeTicks    (centiseconds since boot)
+//   1.3.6.1.4.1.99999.1.1.0   temperature Integer32    (×10, e.g. 225 = 22.5 °C)
+//   1.3.6.1.4.1.99999.1.2.0   humidity    Gauge32      (×10, e.g. 456 = 45.6 %)
+//   1.3.6.1.4.1.99999.1.3.0   pressure    Gauge32      (×10, e.g. 10132 = 1013.2 hPa)
 
 // I2C pin assignments (ESP-01 only has GPIO0 and GPIO2 available)
 #define I2C_SDA            0
@@ -95,6 +109,7 @@ struct Settings {
   char     ntpServer[64];   // NTP server hostname
   int8_t   utcOffset;       // timezone offset in whole hours, -12 to +14
   bool     loggingEnabled;  // whether CSV logging to LittleFS is active
+  char     snmpCommunity[24]; // SNMPv1/v2c community string; default "public"
 };
 
 Settings cfg;  // global instance; loaded from EEPROM in setup()
@@ -131,6 +146,10 @@ int prevPresInt = -9999;
 float stubTemp = STUB_TEMP_BASE;
 float stubHum  = STUB_HUM_BASE;
 float stubPres = STUB_PRES_BASE;
+
+// SNMP globals
+static WiFiUDP snmpUdp;
+static uint8_t snmpBuf[SNMP_BUF_SZ];   // shared RX / TX buffer
 
 // ============================================================
 //  PROGMEM HTML
@@ -238,6 +257,9 @@ void loadSettings() {
     saveSettings();
     Serial.println(F("[EEPROM] First boot -- defaults applied. Re-enter your settings."));
   }
+  // Upgrade path: community field added after initial release; default it when blank.
+  if (cfg.snmpCommunity[0] == '\0')
+    strncpy(cfg.snmpCommunity, "public", sizeof(cfg.snmpCommunity) - 1);
 }
 
 void saveSettings() {
@@ -539,20 +561,20 @@ void handlePRTG() {
   }
   String xml = F("<prtg>\n");
   if (sens.tempValid || sens.ahtOk) {
-    xml += F("  <r>\n    <channel>Temperature</channel>\n    <unit>Temperature</unit>\n    <float>1</float>\n");
+    xml += F("  <result>\n    <channel>Temperature</channel>\n    <unit>Temperature</unit>\n    <float>1</float>\n");
     xml += "    <value>" + String(sens.temperature,1) + "</value>\n";
     if (!sens.tempValid) xml += F("    <warning>1</warning>\n    <message>Out of valid range</message>\n");
-    xml += F("  </r>\n");
-    xml += F("  <r>\n    <channel>Humidity</channel>\n    <unit>Percent</unit>\n    <float>1</float>\n");
+    xml += F("  </result>\n");
+    xml += F("  <result>\n    <channel>Humidity</channel>\n    <unit>Percent</unit>\n    <float>1</float>\n");
     xml += "    <value>" + String(sens.humidity,1) + "</value>\n";
     if (!sens.humValid) xml += F("    <warning>1</warning>\n    <message>Out of valid range</message>\n");
-    xml += F("  </r>\n");
+    xml += F("  </result>\n");
   }
   if (sens.presValid || sens.bmpOk) {
-    xml += F("  <r>\n    <channel>Pressure</channel>\n    <unit>Custom</unit>\n    <customunit>hPa</customunit>\n    <float>1</float>\n");
+    xml += F("  <result>\n    <channel>Pressure</channel>\n    <unit>Custom</unit>\n    <customunit>hPa</customunit>\n    <float>1</float>\n");
     xml += "    <value>" + String(sens.pressure,1) + "</value>\n";
     if (!sens.presValid) xml += F("    <warning>1</warning>\n    <message>Out of valid range</message>\n");
-    xml += F("  </r>\n");
+    xml += F("  </result>\n");
   }
   xml += F("</prtg>");
   server.send(200, F("text/xml"), xml);
@@ -666,6 +688,7 @@ void printMenu() {
   Serial.println(F("14. Show sensor readings"));
   Serial.println(F("15. List log files on FS"));
   Serial.println(F("16. Hard reset  (wipe all settings + format FS)"));
+  Serial.println(F("17. Set SNMP community  (default: public)"));
   Serial.println(F(" 0. Save and reboot"));
   Serial.println(F("Command > (enter number, press Enter):"));
 }
@@ -692,6 +715,7 @@ void printCurrentSettings() {
   Serial.print(F("NTP synced  : ")); Serial.println(ntpSynced ? F("YES") : F("NO"));
   if (ntpSynced) { Serial.print(F("Local time  : ")); Serial.println(getDateTimeString()); }
   Serial.print(F("Logging     : ")); Serial.println(cfg.loggingEnabled ? F("ENABLED") : F("DISABLED"));
+  Serial.print(F("SNMP comm   : ")); Serial.println(cfg.snmpCommunity);
   Serial.print(F("Token       : ")); Serial.println(strlen(cfg.token) ? F("[set]") : F("[not set]"));
   Serial.print(F("FW version  : ")); Serial.println(F(FW_VERSION));
   FSInfo fi;
@@ -867,6 +891,13 @@ void handleSerialMenu() {
       Serial.println(F("Saved. Rebooting..."));
       delay(2000); ESP.restart();
       break;
+    case 17:
+      Serial.print(F("SNMP community [public]: "));
+      { String s = readLine();
+        if (s.length() > 0)
+          s.toCharArray(cfg.snmpCommunity, sizeof(cfg.snmpCommunity));
+        Serial.print(F("SNMP community: ")); Serial.println(cfg.snmpCommunity); }
+      break;
     default: break;
   }  // end switch
   lastReconnMs = millis();  // prevent the reconnect timer from firing right after menu use
@@ -874,8 +905,328 @@ void handleSerialMenu() {
 }
 
 // ============================================================
-//  WiFi
+//  SNMP minimal agent  (SNMPv1 / SNMPv2c, GET only)
+//
+//  Implements a hand-rolled BER/ASN.1 encoder-decoder that fits
+//  in the ESP-01's tight 80 KB heap with no extra libraries.
+//
+//  All writes use 2-byte BER length (0x81 0xNN) for SEQUENCE
+//  wrappers — valid per BER, accepted by every real SNMP stack.
 // ============================================================
+
+// ---- ASN.1 / BER constants -----------------------------------
+#define ASN_INT       0x02
+#define ASN_OCTSTR    0x04
+#define ASN_NULL      0x05
+#define ASN_OID       0x06
+#define ASN_SEQ       0x30
+#define ASN_TIMETICKS 0x43
+#define ASN_GAUGE32   0x42
+#define SNMP_GET_REQ  0xA0
+#define SNMP_GET_RESP 0xA2
+// v2c "noSuchObject" exception — returned for unknown OIDs when version == 1 (v2c)
+#define SNMP_NOSUCHOBJ 0x80
+
+// ---- Pre-encoded OID data bytes (PROGMEM) --------------------
+// First byte 0x2B encodes the mandatory 1.3 prefix (1×40+3=43=0x2B).
+// Remaining components are base-128 big-endian with high bit set on all
+// non-final bytes.  99999 encodes as 0x86 0x8D 0x1F.
+
+// 1.3.6.1.2.1.1.1.0  sysDescr
+static const uint8_t P_SYSDESCR[8]  PROGMEM =
+  {0x2B,0x06,0x01,0x02,0x01,0x01,0x01,0x00};
+// 1.3.6.1.2.1.1.3.0  sysUpTime
+static const uint8_t P_SYSUPTIME[8] PROGMEM =
+  {0x2B,0x06,0x01,0x02,0x01,0x01,0x03,0x00};
+// 1.3.6.1.4.1.99999.1.1.0  temperature ×10
+static const uint8_t P_TEMP[11]     PROGMEM =
+  {0x2B,0x06,0x01,0x04,0x01,0x86,0x8D,0x1F,0x01,0x01,0x00};
+// 1.3.6.1.4.1.99999.1.2.0  humidity ×10
+static const uint8_t P_HUM[11]      PROGMEM =
+  {0x2B,0x06,0x01,0x04,0x01,0x86,0x8D,0x1F,0x01,0x02,0x00};
+// 1.3.6.1.4.1.99999.1.3.0  pressure ×10
+static const uint8_t P_PRES[11]     PROGMEM =
+  {0x2B,0x06,0x01,0x04,0x01,0x86,0x8D,0x1F,0x01,0x03,0x00};
+
+// ---- OID index constants -------------------------------------
+#define OID_SYSDESCR  0
+#define OID_SYSUPTIME 1
+#define OID_TEMP      2
+#define OID_HUM       3
+#define OID_PRES      4
+#define OID_UNKNOWN   5
+
+static uint8_t snmpMatchOID(const uint8_t *d, uint8_t n) {
+  if (n ==  8 && !memcmp_P(d, P_SYSDESCR,  8)) return OID_SYSDESCR;
+  if (n ==  8 && !memcmp_P(d, P_SYSUPTIME, 8)) return OID_SYSUPTIME;
+  if (n == 11 && !memcmp_P(d, P_TEMP,     11)) return OID_TEMP;
+  if (n == 11 && !memcmp_P(d, P_HUM,      11)) return OID_HUM;
+  if (n == 11 && !memcmp_P(d, P_PRES,     11)) return OID_PRES;
+  return OID_UNKNOWN;
+}
+
+// ---- BER read helpers ----------------------------------------
+// rp is the current read offset within snmpBuf.
+
+static uint16_t rp;
+
+static uint8_t  rByte()          { return (rp < SNMP_BUF_SZ) ? snmpBuf[rp++] : 0; }
+static void     rSkip(uint16_t n){ rp += n; }
+
+static uint16_t rLen() {
+  uint8_t b = rByte();
+  if (b < 0x80) return b;          // short form
+  uint8_t n = b & 0x7F;            // long form: n bytes follow
+  uint16_t l = 0;
+  while (n--) l = (l << 8) | rByte();
+  return l;
+}
+
+// Read n bytes as a signed integer (sign-extended from MSB)
+static int32_t rInt32(uint8_t n) {
+  int32_t v = (snmpBuf[rp] & 0x80) ? -1L : 0L;
+  while (n--) v = (v << 8) | rByte();
+  return v;
+}
+
+// ---- BER write helpers ---------------------------------------
+// wp is the current write offset within snmpBuf.
+
+static uint16_t wp;
+
+static void wByte(uint8_t b) { if (wp < SNMP_BUF_SZ) snmpBuf[wp++] = b; }
+
+// Begin a constructed TLV (SEQUENCE or PDU context tag).
+// Writes tag + two-byte length placeholder (0x81 0x00).
+// Returns the position of the 0x81 byte; pass it to wSeqEnd() later.
+static uint16_t wSeqStart(uint8_t tag) {
+  wByte(tag);
+  uint16_t pos = wp;
+  wByte(0x81); wByte(0x00); // placeholder; patched by wSeqEnd
+  return pos;
+}
+
+// Patch the length bytes written by wSeqStart.
+static void wSeqEnd(uint16_t lenPos) {
+  snmpBuf[lenPos + 1] = (uint8_t)(wp - lenPos - 2);
+}
+
+// Write a 4-byte INTEGER (handles negative temperatures).
+static void wInt32(int32_t v) {
+  wByte(ASN_INT); wByte(4);
+  wByte((v >> 24) & 0xFF); wByte((v >> 16) & 0xFF);
+  wByte((v >>  8) & 0xFF); wByte( v        & 0xFF);
+}
+
+// Write a 4-byte unsigned value with a given tag (Gauge32 or TimeTicks).
+static void wU32(uint8_t tag, uint32_t v) {
+  wByte(tag); wByte(4);
+  wByte((v >> 24) & 0xFF); wByte((v >> 16) & 0xFF);
+  wByte((v >>  8) & 0xFF); wByte( v        & 0xFF);
+}
+
+// Write OID TLV for one of our known OIDs (data from PROGMEM).
+static void wOID(uint8_t oidIdx) {
+  const uint8_t *pgm; uint8_t len;
+  switch (oidIdx) {
+    case OID_SYSDESCR:  pgm = P_SYSDESCR;  len =  8; break;
+    case OID_SYSUPTIME: pgm = P_SYSUPTIME; len =  8; break;
+    case OID_TEMP:      pgm = P_TEMP;      len = 11; break;
+    case OID_HUM:       pgm = P_HUM;       len = 11; break;
+    case OID_PRES:      pgm = P_PRES;      len = 11; break;
+    default: return;
+  }
+  wByte(ASN_OID); wByte(len);
+  for (uint8_t i = 0; i < len; i++) wByte(pgm_read_byte(&pgm[i]));
+}
+
+// Write OID TLV by copying raw bytes from snmpBuf (echoing an unknown OID back).
+static void wOIDRaw(uint16_t oidDataPos, uint8_t oidDataLen) {
+  wByte(ASN_OID); wByte(oidDataLen);
+  for (uint8_t i = 0; i < oidDataLen; i++) wByte(snmpBuf[oidDataPos + i]);
+}
+
+// ---- Core packet processor -----------------------------------
+
+static void snmpProcess(uint16_t rxLen) {
+  rp = 0;
+
+  // ---- Parse the incoming GetRequest ----
+
+  // Outer SEQUENCE
+  if (rByte() != ASN_SEQ) return;
+  rLen(); // skip outer length
+
+  // Version INTEGER (0 = v1, 1 = v2c)
+  if (rByte() != ASN_INT) return;
+  int32_t version = rInt32((uint8_t)rLen());
+  if (version != 0 && version != 1) return;
+
+  // Community OCTET STRING
+  if (rByte() != ASN_OCTSTR) return;
+  uint8_t cLen = (uint8_t)rLen();
+  if (cLen > 23 || rp + cLen > rxLen) return;
+  char rxComm[24];
+  memcpy(rxComm, &snmpBuf[rp], cLen); rxComm[cLen] = '\0';
+  rSkip(cLen);
+  if (strcmp(rxComm, cfg.snmpCommunity) != 0) return; // community mismatch — silent drop
+
+  // PDU type — only GetRequest is supported
+  if (rByte() != SNMP_GET_REQ) return;
+  rLen(); // skip PDU length
+
+  // Request-ID INTEGER
+  if (rByte() != ASN_INT) return;
+  int32_t requestId = rInt32((uint8_t)rLen());
+
+  // error-status and error-index (both 0 in a request; skip them)
+  if (rByte() != ASN_INT) return; rSkip(rLen());
+  if (rByte() != ASN_INT) return; rSkip(rLen());
+
+  // VarBindList SEQUENCE
+  if (rByte() != ASN_SEQ) return;
+  uint16_t vblLen = rLen();
+  uint16_t vblEnd = rp + vblLen;
+
+  // Collect up to 6 requested OIDs.
+  // We save: matching index + original data position (for echoing unknown OIDs).
+  #define SNMP_MAX_VB 6
+  uint8_t  vbIdx[SNMP_MAX_VB];
+  uint16_t vbOidPos[SNMP_MAX_VB];  // position of OID data bytes in snmpBuf
+  uint8_t  vbOidLen[SNMP_MAX_VB];
+  uint8_t  vbCount = 0;
+
+  while (rp < vblEnd && vbCount < SNMP_MAX_VB) {
+    if (rByte() != ASN_SEQ) break;
+    rLen(); // VarBind length
+    if (rByte() != ASN_OID) break;
+    uint8_t oidLen = (uint8_t)rLen();
+    if (rp + oidLen > vblEnd) break;
+    vbIdx[vbCount]    = snmpMatchOID(&snmpBuf[rp], oidLen);
+    vbOidPos[vbCount] = rp;
+    vbOidLen[vbCount] = oidLen;
+    vbCount++;
+    rSkip(oidLen);
+    // Skip the NULL placeholder in the request (if present)
+    if (rp < vblEnd && snmpBuf[rp] == ASN_NULL) { rByte(); rSkip(rLen()); }
+  }
+
+  // ---- Build the GetResponse ----
+  // We now overwrite snmpBuf from position 0; the parsed request data is no
+  // longer needed (we have everything in local variables).
+
+  wp = 0;
+
+  uint16_t outerStart = wSeqStart(ASN_SEQ);
+
+    // Version (echo back what the requester sent)
+    wByte(ASN_INT); wByte(1); wByte((uint8_t)version);
+
+    // Community
+    uint8_t cl = strlen(cfg.snmpCommunity);
+    wByte(ASN_OCTSTR); wByte(cl);
+    for (uint8_t i = 0; i < cl; i++) wByte(cfg.snmpCommunity[i]);
+
+    uint16_t pduStart = wSeqStart(SNMP_GET_RESP);
+
+      // Request-ID (fixed 4-byte encoding for simplicity)
+      wByte(ASN_INT); wByte(4);
+      wByte((requestId >> 24) & 0xFF); wByte((requestId >> 16) & 0xFF);
+      wByte((requestId >>  8) & 0xFF); wByte( requestId        & 0xFF);
+
+      // error-status = 0, error-index = 0
+      wByte(ASN_INT); wByte(1); wByte(0);
+      wByte(ASN_INT); wByte(1); wByte(0);
+
+      uint16_t vblStart = wSeqStart(ASN_SEQ); // VarBindList
+
+        for (uint8_t i = 0; i < vbCount; i++) {
+          uint16_t vbStart = wSeqStart(ASN_SEQ); // VarBind
+
+            // Echo the OID back (known OIDs from PROGMEM; unknown ones from the saved rx bytes)
+            if (vbIdx[i] != OID_UNKNOWN) wOID(vbIdx[i]);
+            else                         wOIDRaw(vbOidPos[i], vbOidLen[i]);
+
+            // Value
+            switch (vbIdx[i]) {
+
+              case OID_SYSDESCR: {
+                // "SensorName / ESP01-Climate vX.Y"
+                String desc = String(cfg.sensorName) +
+                              F(" / ESP01-Climate v") + F(FW_VERSION);
+                uint8_t dl = min((int)desc.length(), 63);
+                wByte(ASN_OCTSTR); wByte(dl);
+                for (uint8_t j = 0; j < dl; j++) wByte(desc[j]);
+                break;
+              }
+
+              case OID_SYSUPTIME:
+                // TimeTicks: centiseconds (hundredths of a second) since boot
+                wU32(ASN_TIMETICKS, millis() / 10UL);
+                break;
+
+              case OID_TEMP:
+                if (sens.tempValid)
+                  wInt32((int32_t)(sens.temperature * 10.0f +
+                         (sens.temperature < 0.0f ? -0.5f : 0.5f)));
+                else
+                  { wByte(ASN_NULL); wByte(0); }
+                break;
+
+              case OID_HUM:
+                if (sens.humValid)
+                  wU32(ASN_GAUGE32, (uint32_t)(sens.humidity * 10.0f + 0.5f));
+                else
+                  { wByte(ASN_NULL); wByte(0); }
+                break;
+
+              case OID_PRES:
+                if (sens.presValid)
+                  wU32(ASN_GAUGE32, (uint32_t)(sens.pressure * 10.0f + 0.5f));
+                else
+                  { wByte(ASN_NULL); wByte(0); }
+                break;
+
+              default:
+                // Unknown OID: noSuchObject (v2c) or NULL (v1)
+                wByte(version == 1 ? SNMP_NOSUCHOBJ : ASN_NULL); wByte(0);
+                break;
+            }
+
+          wSeqEnd(vbStart); // close VarBind
+        }
+
+      wSeqEnd(vblStart);  // close VarBindList
+    wSeqEnd(pduStart);    // close GetResponse PDU
+  wSeqEnd(outerStart);    // close outer SEQUENCE
+
+  if (wp >= SNMP_BUF_SZ) {
+    Serial.println(F("[SNMP] Response overflow, packet dropped"));
+    return;
+  }
+
+  snmpUdp.beginPacket(snmpUdp.remoteIP(), snmpUdp.remotePort());
+  snmpUdp.write(snmpBuf, wp);
+  snmpUdp.endPacket();
+}
+
+// Called from setup() to open the UDP socket on port 161.
+void setupSNMP() {
+  snmpUdp.begin(SNMP_PORT);
+  Serial.print(F("[SNMP] Agent listening on UDP port "));
+  Serial.println(SNMP_PORT);
+}
+
+// Called from loop() — checks for an incoming SNMP packet and responds.
+void tickSNMP() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  int n = snmpUdp.parsePacket();
+  if (n <= 0 || n > SNMP_BUF_SZ) return;
+  int r = snmpUdp.read(snmpBuf, SNMP_BUF_SZ);
+  if (r > 0) snmpProcess((uint16_t)r);
+}
+
+
 
 void connectWiFi() {
   if (strlen(cfg.ssid) == 0) { Serial.println(F("[WiFi] SSID not set.")); return; }
@@ -970,6 +1321,7 @@ void setup() {
   server.onNotFound([]() { server.send(404, F("text/plain"), F("404 Not Found")); });
   server.begin();
   Serial.println(F("[HTTP] Server started"));
+  setupSNMP();
   printMenu();
 }
 
@@ -983,6 +1335,7 @@ void loop() {
   tickSensors();           // read sensors if enough time has passed
   tickLog();               // write a CSV entry if enough time has passed
   tickNTP();               // re-sync time if an hour has passed
+  tickSNMP();              // respond to any incoming SNMP GET requests
 
   // If WiFi dropped, try to reconnect every RECONNECT_MS milliseconds
   if (strlen(cfg.ssid)>0 && WiFi.status()!=WL_CONNECTED) {
