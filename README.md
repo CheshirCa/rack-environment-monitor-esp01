@@ -12,7 +12,14 @@
 <a name="english"></a>
 # ESP-01 Rack Environment Monitor
 
-A low-cost WiFi environmental sensor for server rooms and network cabinets built on an **ESP-01 (ESP8266)** microcontroller with a **BMP280 + AHT20** sensor board. Measures temperature, humidity, and atmospheric pressure. Exposes data through a built-in web server with a human-readable dashboard, CSV logging to onboard flash, and machine-readable endpoints for **Zabbix**, **PRTG**, and **Prometheus + Grafana**.
+A low-cost WiFi environmental sensor for server rooms and network cabinets built on an **ESP-01 (ESP8266)** microcontroller with a **BMP280 + AHT20** sensor board. Measures temperature, humidity, and atmospheric pressure. Exposes data through a built-in web server with a human-readable dashboard, CSV logging to onboard flash, machine-readable endpoints for **Zabbix**, **PRTG**, and **Prometheus + Grafana**, and a native **SNMP agent** (SNMPv1/v2c) for integration with any standard network monitoring system.
+
+### What's new in v1.2
+
+- **SNMP agent** — built-in SNMPv1/v2c GET agent on UDP port 161. Exposes temperature, humidity, pressure, `sysDescr`, and `sysUpTime` as standard OIDs. No extra libraries — pure BER/ASN.1 implemented entirely within the firmware to preserve the ESP-01's limited RAM.
+- **Configurable SNMP community string** — set via serial menu item **17** (default: `public`).
+- **Serial menu completed** — items 15 (list log files), 16 (hard reset), and 17 (SNMP community) documented; 15 and 16 were present in firmware but missing from previous documentation.
+- **`#include <WiFiUdp.h>`** added explicitly — required for the SNMP UDP socket on the ESP8266 Arduino core.
 
 
 ---
@@ -26,6 +33,7 @@ A low-cost WiFi environmental sensor for server rooms and network cabinets built
 - [Web UI](#web-ui)
 - [HTTP Endpoints](#http-endpoints)
 - [Terminal CLI (Serial Menu)](#terminal-cli-serial-menu)
+- [SNMP Agent](#snmp-agent)
 - [Zabbix Integration](#zabbix-integration)
 - [PRTG Integration](#prtg-integration)
 - [Prometheus + Grafana Integration](#prometheus--grafana-integration)
@@ -131,21 +139,24 @@ Open the Serial Monitor at **115200 baud** immediately after flashing.
 On first boot, EEPROM defaults are applied and the configuration menu is displayed:
 
 ```
-=== WiFi Climate Sensor v1.1 ===
+=== WiFi Climate Sensor v1.2 ===
  1. Show current settings
  2. Set SSID
  3. Set WiFi password
  4. Set static IP  (empty = DHCP)
  5. Set subnet mask
  6. Set gateway
- 7. Set sensor name / location
- 8. Set /status token  (empty = open)
- 9. Set NTP server
-10. Set UTC offset  (-12..+14)
-11. Toggle logging  (on/off)
-12. Force NTP sync now
-13. Show sensor readings
-14. List log files on FS
+ 7. Set DNS server  (empty = use gateway)
+ 8. Set sensor name / location
+ 9. Set /status token  (empty = open)
+10. Set NTP server
+11. Set UTC offset  (-12..+14)
+12. Toggle logging  (on/off)
+13. Force NTP sync now
+14. Show sensor readings
+15. List log files on FS
+16. Hard reset  (wipe all settings + format FS)
+17. Set SNMP community  (default: public)
  0. Save and reboot
 ```
 
@@ -229,17 +240,71 @@ Connect with any terminal at **115200 8N1** (no flow control). The menu re-appea
 | `4` | Set static IP (leave blank for DHCP) |
 | `5` | Set subnet mask |
 | `6` | Set default gateway |
-| `7` | Set sensor name / location label |
-| `8` | Set access token for `/status` endpoint |
-| `9` | Set NTP server hostname |
-| `10` | Set UTC timezone offset (whole hours, −12…+14) |
-| `11` | Toggle CSV logging on or off |
-| `12` | Force immediate NTP time synchronisation |
-| `13` | Print live sensor readings with validity flags |
-| `14` | List all log files stored in flash |
+| `7` | Set primary DNS server (leave blank to use gateway as DNS) |
+| `8` | Set sensor name / location label |
+| `9` | Set access token for `/status` endpoint |
+| `10` | Set NTP server hostname |
+| `11` | Set UTC timezone offset (whole hours, −12…+14) |
+| `12` | Toggle CSV logging on or off |
+| `13` | Force immediate NTP time synchronisation |
+| `14` | Print live sensor readings with validity flags |
+| `15` | List all log files stored in flash |
+| `16` | **Hard reset** — wipes all EEPROM settings and formats LittleFS (asks for confirmation) |
+| `17` | Set SNMP community string (default: `public`) |
 | `0` | **Save all settings to EEPROM and reboot** |
 
 > Settings take effect only after saving with **0**.
+
+---
+
+## SNMP Agent
+
+The firmware includes a lightweight **SNMPv1/v2c GET agent** listening on **UDP port 161**. It is implemented without any external libraries — a minimal BER/ASN.1 encoder/decoder is built directly into the firmware to keep the ESP-01's 80 KB heap free.
+
+### Exposed OIDs
+
+| OID | Type | Value |
+|---|---|---|
+| `1.3.6.1.2.1.1.1.0` | OctetString | `sysDescr` — sensor name + firmware version |
+| `1.3.6.1.2.1.1.3.0` | TimeTicks | `sysUpTime` — centiseconds since last boot |
+| `1.3.6.1.4.1.99999.1.1.0` | Integer32 | Temperature × 10 (e.g. `225` = 22.5 °C) |
+| `1.3.6.1.4.1.99999.1.2.0` | Gauge32 | Humidity × 10 (e.g. `456` = 45.6 %) |
+| `1.3.6.1.4.1.99999.1.3.0` | Gauge32 | Pressure × 10 (e.g. `10132` = 1013.2 hPa) |
+
+Values are multiplied by 10 because SNMP integer types do not carry decimal fractions; divide by 10 in your monitoring system to get the real reading.
+
+The Enterprise number `99999` is a placeholder. For a production deployment, [register your own free OID prefix with IANA](https://www.iana.org/form/pen) and update the `P_TEMP` / `P_HUM` / `P_PRES` PROGMEM arrays accordingly.
+
+### Configuration
+
+Set the community string via serial menu item **17** (default: `public`). Save with **0** to apply.
+
+SNMP is always active when WiFi is connected; there is no separate enable/disable switch.
+
+### Quick test
+
+```bash
+# Requires net-snmp tools  (apt install snmp  /  brew install net-snmp)
+
+# Read all three sensor values at once
+snmpget -v2c -c public 192.168.1.x \
+  1.3.6.1.4.1.99999.1.1.0 \
+  1.3.6.1.4.1.99999.1.2.0 \
+  1.3.6.1.4.1.99999.1.3.0
+
+# Example output:
+# iso.3.6.1.4.1.99999.1.1.0 = INTEGER: 225      → 22.5 °C
+# iso.3.6.1.4.1.99999.1.2.0 = Gauge32: 456      → 45.6 %
+# iso.3.6.1.4.1.99999.1.3.0 = Gauge32: 10132    → 1013.2 hPa
+```
+
+> **Linux note:** Binding to UDP port 161 requires root or `CAP_NET_BIND_SERVICE`. The ESP-01 handles this itself — no special setup is needed on the device side. If your monitoring host cannot reach port 161, check that no firewall rule is blocking inbound UDP/161 from the sensor's IP.
+
+### Limitations
+
+- **GET only** — GetNext (MIB walk) and SNMP Traps are not implemented; the ESP-01 does not have enough RAM for a full MIB tree.
+- **SNMPv3 not supported** — use network-level isolation (VLAN, firewall) if security is a concern.
+- The agent processes one packet per `loop()` iteration; at 10-second sensor polling intervals this is more than sufficient for any standard polling cycle.
 
 ---
 
@@ -439,7 +504,8 @@ The device must be connected to WiFi and able to reach the configured NTP server
 ---
 
 *Designed for server room and network cabinet environment monitoring.  
-Tested with ESP-01 + CH340 + BMP280/AHT20 combo board.*
+Tested with ESP-01 + CH340 + BMP280/AHT20 combo board.  
+Firmware v1.2 — SNMP agent, DNS setting, hard reset via serial menu.*
 
 ---
 ---
@@ -447,7 +513,14 @@ Tested with ESP-01 + CH340 + BMP280/AHT20 combo board.*
 <a name="russian"></a>
 # ESP-01 Rack Environment Monitor
 
-Малобюджетный WiFi-датчик окружающей среды для серверных комнат и коммутационных шкафов. Построен на микроконтроллере **ESP-01 (ESP8266)** в паре с платой датчиков **BMP280 + AHT20**. Измеряет температуру, влажность и атмосферное давление. Данные доступны через встроенный веб-сервер — дашборд для браузера, CSV-логи во встроенной флеш-памяти и машиночитаемые эндпоинты для **Zabbix**, **PRTG** и **Prometheus + Grafana**.
+Малобюджетный WiFi-датчик окружающей среды для серверных комнат и коммутационных шкафов. Построен на микроконтроллере **ESP-01 (ESP8266)** в паре с платой датчиков **BMP280 + AHT20**. Измеряет температуру, влажность и атмосферное давление. Данные доступны через встроенный веб-сервер — дашборд для браузера, CSV-логи во встроенной флеш-памяти, машиночитаемые эндпоинты для **Zabbix**, **PRTG** и **Prometheus + Grafana**, а также встроенный **SNMP-агент** (SNMPv1/v2c) для интеграции с любой стандартной системой мониторинга сети.
+
+### Что нового в v1.2
+
+- **SNMP-агент** — встроенный SNMPv1/v2c GET-агент на UDP-порту 161. Отдаёт температуру, влажность, давление, `sysDescr` и `sysUpTime` по стандартным OID. Сторонние библиотеки не используются — чистый BER/ASN.1 реализован внутри прошивки, чтобы не расходовать 80 КБ кучи ESP-01.
+- **Настраиваемая community-строка SNMP** — задаётся через пункт **17** серийного меню (по умолчанию: `public`).
+- **Серийное меню дополнено** — пункты 15 (список файлов логов), 16 (полный сброс настроек), 17 (SNMP community) добавлены в документацию; 15 и 16 присутствовали в прошивке, но не были описаны.
+- **`#include <WiFiUdp.h>`** добавлен явно — необходим для UDP-сокета SNMP в ESP8266 Arduino core.
 
 ---
 
@@ -460,6 +533,7 @@ Tested with ESP-01 + CH340 + BMP280/AHT20 combo board.*
 - [Веб-интерфейс](#веб-интерфейс)
 - [HTTP-эндпоинты](#http-эндпоинты)
 - [Терминал CLI (серийное меню)](#терминал-cli-серийное-меню)
+- [SNMP-агент](#snmp-агент)
 - [Интеграция с Zabbix](#интеграция-с-zabbix)
 - [Интеграция с PRTG](#интеграция-с-prtg)
 - [Интеграция с Prometheus + Grafana](#интеграция-с-prometheus--grafana)
@@ -602,15 +676,69 @@ esptool.py --chip esp8266 --port COM3 --baud 115200 \
 | `4` | Задать статический IP (пусто = DHCP) |
 | `5` | Задать маску подсети |
 | `6` | Задать шлюз по умолчанию |
-| `7` | Задать имя/расположение датчика |
-| `8` | Задать токен доступа к `/status` |
-| `9` | Задать сервер NTP |
-| `10` | Задать смещение UTC (целые часы, −12…+14) |
-| `11` | Включить/выключить CSV-логирование |
-| `12` | Принудительная синхронизация времени по NTP |
-| `13` | Показать текущие показания датчиков |
-| `14` | Показать список файлов логов в памяти |
+| `7` | Задать основной DNS-сервер (пусто = использовать шлюз) |
+| `8` | Задать имя/расположение датчика |
+| `9` | Задать токен доступа к `/status` |
+| `10` | Задать сервер NTP |
+| `11` | Задать смещение UTC (целые часы, −12…+14) |
+| `12` | Включить/выключить CSV-логирование |
+| `13` | Принудительная синхронизация времени по NTP |
+| `14` | Показать текущие показания датчиков |
+| `15` | Показать список файлов логов в памяти |
+| `16` | **Полный сброс** — удалить все настройки EEPROM и отформатировать LittleFS (запрашивает подтверждение) |
+| `17` | Задать SNMP community string (по умолчанию: `public`) |
 | `0` | **Сохранить настройки в EEPROM и перезагрузиться** |
+
+---
+
+## SNMP-агент
+
+Прошивка включает лёгкий **SNMPv1/v2c GET-агент**, слушающий **UDP-порт 161**. Реализован без сторонних библиотек — минимальный BER/ASN.1-кодировщик/декодировщик встроен прямо в прошивку, чтобы не расходовать 80 КБ кучи ESP-01.
+
+### Доступные OID
+
+| OID | Тип | Значение |
+|---|---|---|
+| `1.3.6.1.2.1.1.1.0` | OctetString | `sysDescr` — имя датчика + версия прошивки |
+| `1.3.6.1.2.1.1.3.0` | TimeTicks | `sysUpTime` — сотые секунды с момента загрузки |
+| `1.3.6.1.4.1.99999.1.1.0` | Integer32 | Температура × 10 (например `225` = 22,5 °C) |
+| `1.3.6.1.4.1.99999.1.2.0` | Gauge32 | Влажность × 10 (например `456` = 45,6 %) |
+| `1.3.6.1.4.1.99999.1.3.0` | Gauge32 | Давление × 10 (например `10132` = 1013,2 hPa) |
+
+Значения умножены на 10, поскольку целочисленные типы SNMP не поддерживают дробные числа. Разделите на 10 в системе мониторинга, чтобы получить реальное значение.
+
+Enterprise number `99999` — заглушка. Для продакшена [зарегистрируйте собственный OID-префикс в IANA](https://www.iana.org/form/pen) бесплатно, затем обновите массивы `P_TEMP` / `P_HUM` / `P_PRES` в исходном коде.
+
+### Настройка
+
+Community string задаётся через пункт **17** серийного меню (по умолчанию: `public`). Сохраните настройки командой **0** для применения.
+
+SNMP-агент работает всегда, пока устройство подключено к WiFi; отдельного переключателя нет.
+
+### Быстрая проверка
+
+```bash
+# Требует пакет net-snmp  (apt install snmp  /  brew install net-snmp)
+
+# Запросить все три значения разом
+snmpget -v2c -c public 192.168.1.x \
+  1.3.6.1.4.1.99999.1.1.0 \
+  1.3.6.1.4.1.99999.1.2.0 \
+  1.3.6.1.4.1.99999.1.3.0
+
+# Пример ответа:
+# iso.3.6.1.4.1.99999.1.1.0 = INTEGER: 225      → 22,5 °C
+# iso.3.6.1.4.1.99999.1.2.0 = Gauge32: 456      → 45,6 %
+# iso.3.6.1.4.1.99999.1.3.0 = Gauge32: 10132    → 1013,2 hPa
+```
+
+> **Примечание:** UDP-порт 161 на самом датчике ничего дополнительного не требует. Если система мониторинга не может достучаться до порта — проверьте, не блокирует ли входящий UDP/161 сетевой экран.
+
+### Ограничения
+
+- **Только GET** — GetNext (обход MIB) и SNMP Traps не реализованы: ESP-01 не хватает RAM для полного дерева MIB.
+- **SNMPv3 не поддерживается** — используйте сетевую изоляцию (VLAN, firewall) там, где важна безопасность.
+- Агент обрабатывает один пакет за итерацию `loop()` — для любого стандартного интервала опроса этого более чем достаточно.
 
 ---
 
@@ -807,4 +935,5 @@ date,time,temp_c,hum_pct,pres_hpa
 ---
 
 *Разработан для мониторинга микроклимата в серверных комнатах и коммутационных шкафах.  
-Протестирован с ESP-01 + CH340 + платой датчиков BMP280/AHT20.*
+Протестирован с ESP-01 + CH340 + платой датчиков BMP280/AHT20.  
+Прошивка v1.2 — SNMP-агент, настройка DNS, полный сброс через серийное меню.*
