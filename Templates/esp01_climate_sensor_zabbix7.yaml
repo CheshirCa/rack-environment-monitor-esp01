@@ -1,0 +1,303 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: 4a5b946d08ea4bc2963be9a9a66c95d2
+      name: 'Environmental Sensors'
+  templates:
+    - uuid: 3b89dbdebff848239fe4bf9982732dbd
+      template: 'ESP-01 Climate Sensor'
+      name: 'ESP-01 Climate Sensor'
+      description: |
+        WiFi environmental sensor based on ESP-01 with BMP280 and AHT20.
+        Monitors temperature, humidity and atmospheric pressure.
+        Designed for server rooms and network cabinets.
+        Required host macro:
+          {$SENSOR_IP} - IP address of the sensor board (e.g. 192.168.1.101)
+        Optional macros (override per host if needed):
+          {$TEMP_WARN_HIGH} - temperature warning high  (default 28)
+          {$TEMP_ERR_HIGH}  - temperature error high    (default 35)
+          {$TEMP_WARN_LOW}  - temperature warning low   (default 18)
+          {$TEMP_ERR_LOW}   - temperature error low     (default 15)
+          {$HUM_WARN_HIGH}  - humidity warning high     (default 60)
+          {$HUM_ERR_HIGH}   - humidity error high       (default 70)
+          {$HUM_WARN_LOW}   - humidity warning low      (default 30)
+          {$HUM_ERR_LOW}    - humidity error low        (default 20)
+      groups:
+        - name: 'Environmental Sensors'
+      items:
+        - uuid: 7e4fcd2dc6dc4703b78475182fa37743
+          name: 'Climate raw JSON'
+          type: HTTP_AGENT
+          key: climate.json
+          history: 1d
+          trends: '0'
+          value_type: TEXT
+          url: 'http://{$SENSOR_IP}/zabbix'
+          request_method: GET
+          retrieve_mode: BODY
+          timeout: 10s
+          delay: 60s
+          description: 'Fetches the full JSON payload from the sensor. All other items depend on this master item.'
+          tags:
+            - tag: component
+              value: raw
+        - uuid: 024d1d118a89434f809aa2a2809a48e6
+          name: Temperature
+          type: DEPENDENT
+          key: climate.temperature
+          delay: '0'
+          history: 30d
+          trends: 365d
+          value_type: FLOAT
+          units: C
+          description: 'Air temperature reported by AHT20 sensor.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.temperature
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: climate.json
+          tags:
+            - tag: component
+              value: temperature
+          triggers:
+            - uuid: ed4afa5da50b4859bf84f4b987ca5a8e
+              expression: 'last(/ESP-01 Climate Sensor/climate.temperature)>{$TEMP_ERR_HIGH}'
+              name: 'Temperature critical high on {HOST.NAME}'
+              priority: HIGH
+              description: 'Temperature exceeded {$TEMP_ERR_HIGH} C. Immediate action required - risk of hardware damage.'
+              tags:
+                - tag: scope
+                  value: availability
+            - uuid: d946c73087da432bb43eca539cf307be
+              expression: 'last(/ESP-01 Climate Sensor/climate.temperature)>{$TEMP_WARN_HIGH} and last(/ESP-01 Climate Sensor/climate.temperature)<={$TEMP_ERR_HIGH}'
+              name: 'Temperature high on {HOST.NAME}'
+              priority: WARNING
+              description: 'Temperature is above {$TEMP_WARN_HIGH} C. Check cooling and airflow.'
+              dependencies:
+                - name: 'Temperature critical high on {HOST.NAME}'
+                  expression: 'last(/ESP-01 Climate Sensor/climate.temperature)>{$TEMP_ERR_HIGH}'
+              tags:
+                - tag: scope
+                  value: availability
+            - uuid: 30719fe935d940e4bf285e22af8bf3d9
+              expression: 'last(/ESP-01 Climate Sensor/climate.temperature)<{$TEMP_ERR_LOW}'
+              name: 'Temperature critical low on {HOST.NAME}'
+              priority: HIGH
+              description: 'Temperature dropped below {$TEMP_ERR_LOW} C.'
+              tags:
+                - tag: scope
+                  value: availability
+            - uuid: ee08b31347f344d8bc0ab820159cc042
+              expression: 'last(/ESP-01 Climate Sensor/climate.temperature)<{$TEMP_WARN_LOW} and last(/ESP-01 Climate Sensor/climate.temperature)>={$TEMP_ERR_LOW}'
+              name: 'Temperature low on {HOST.NAME}'
+              priority: WARNING
+              description: 'Temperature is below {$TEMP_WARN_LOW} C.'
+              dependencies:
+                - name: 'Temperature critical low on {HOST.NAME}'
+                  expression: 'last(/ESP-01 Climate Sensor/climate.temperature)<{$TEMP_ERR_LOW}'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 5fca3c58bc6e4f99a0cdff07795b8ab0
+          name: Humidity
+          type: DEPENDENT
+          key: climate.humidity
+          delay: '0'
+          history: 30d
+          trends: 365d
+          value_type: FLOAT
+          units: '%'
+          description: 'Relative humidity reported by AHT20 sensor.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.humidity
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: climate.json
+          tags:
+            - tag: component
+              value: humidity
+          triggers:
+            - uuid: ce9ef7a1ad2641f191fca38e1b2c960a
+              expression: 'last(/ESP-01 Climate Sensor/climate.humidity)>{$HUM_ERR_HIGH}'
+              name: 'Humidity critical high on {HOST.NAME}'
+              priority: HIGH
+              description: 'Humidity exceeded {$HUM_ERR_HIGH}%. Risk of condensation on equipment.'
+              tags:
+                - tag: scope
+                  value: availability
+            - uuid: b69fa0768f8f4c8b8c872a5891d4721a
+              expression: 'last(/ESP-01 Climate Sensor/climate.humidity)>{$HUM_WARN_HIGH} and last(/ESP-01 Climate Sensor/climate.humidity)<={$HUM_ERR_HIGH}'
+              name: 'Humidity high on {HOST.NAME}'
+              priority: WARNING
+              description: 'Humidity is above {$HUM_WARN_HIGH}%.'
+              dependencies:
+                - name: 'Humidity critical high on {HOST.NAME}'
+                  expression: 'last(/ESP-01 Climate Sensor/climate.humidity)>{$HUM_ERR_HIGH}'
+              tags:
+                - tag: scope
+                  value: availability
+            - uuid: 2daa95c88c904e0cb585a0a8dbeb45b5
+              expression: 'last(/ESP-01 Climate Sensor/climate.humidity)<{$HUM_ERR_LOW}'
+              name: 'Humidity critical low on {HOST.NAME}'
+              priority: HIGH
+              description: 'Humidity dropped below {$HUM_ERR_LOW}%. Risk of electrostatic discharge.'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 3144a7f1fedd4220a04863ff228b66c6
+          name: Pressure
+          type: DEPENDENT
+          key: climate.pressure
+          delay: '0'
+          history: 30d
+          trends: 365d
+          value_type: FLOAT
+          units: hPa
+          description: 'Atmospheric pressure reported by BMP280 sensor.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.pressure
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: climate.json
+          tags:
+            - tag: component
+              value: pressure
+        - uuid: 38e2d3e63a94417ea2a8ba0e207e80af
+          name: 'Sensor health (all OK)'
+          type: DEPENDENT
+          key: climate.all_ok
+          delay: '0'
+          history: 7d
+          trends: '0'
+          value_type: UNSIGNED
+          description: '1 = all sensors OK. 0 = at least one sensor error or out-of-range value.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.all_ok
+              error_handler: DISCARD_VALUE
+            - type: BOOL_TO_DECIMAL
+              parameters:
+                - ''
+          master_item:
+            key: climate.json
+          tags:
+            - tag: component
+              value: health
+          triggers:
+            - uuid: 3a3deda9cb34421cba8f1bb81d13f55a
+              expression: 'last(/ESP-01 Climate Sensor/climate.all_ok)=0'
+              name: 'Sensor hardware error on {HOST.NAME}'
+              priority: HIGH
+              description: 'AHT20 or BMP280 reporting error. Check wiring and sensor board.'
+              tags:
+                - tag: scope
+                  value: availability
+            - uuid: dc2c16d1882d439886aa6c989bf126b3
+              expression: 'nodata(/ESP-01 Climate Sensor/climate.json,5m)=1'
+              name: 'Sensor not responding on {HOST.NAME}'
+              priority: HIGH
+              description: 'No data received for 5 minutes. Check network connectivity and power supply (USB).'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: ffbb5eb93390401abf156c6a81dc0ac4
+          name: 'Sensor AHT20 status'
+          type: DEPENDENT
+          key: climate.sensor.aht20
+          delay: '0'
+          history: 7d
+          trends: '0'
+          value_type: UNSIGNED
+          description: '1 = AHT20 temperature/humidity sensor is responding. 0 = sensor error.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.sensor_aht20
+              error_handler: DISCARD_VALUE
+            - type: BOOL_TO_DECIMAL
+              parameters:
+                - ''
+          master_item:
+            key: climate.json
+          tags:
+            - tag: component
+              value: health
+          triggers:
+            - uuid: 2bf0625d5f6f41e08c968444335aa1db
+              expression: 'last(/ESP-01 Climate Sensor/climate.sensor.aht20)=0'
+              name: 'AHT20 sensor error on {HOST.NAME}'
+              priority: HIGH
+              description: 'AHT20 temperature/humidity sensor is not responding. Check wiring and I2C connection.'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: e055483e0f444b4383508664e9252302
+          name: 'Sensor BMP280 status'
+          type: DEPENDENT
+          key: climate.sensor.bmp280
+          delay: '0'
+          history: 7d
+          trends: '0'
+          value_type: UNSIGNED
+          description: '1 = BMP280 pressure sensor is responding. 0 = sensor error.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.sensor_bmp280
+              error_handler: DISCARD_VALUE
+            - type: BOOL_TO_DECIMAL
+              parameters:
+                - ''
+          master_item:
+            key: climate.json
+          tags:
+            - tag: component
+              value: health
+          triggers:
+            - uuid: 8e1787a4e8e64b129bfbf49c959af6ee
+              expression: 'last(/ESP-01 Climate Sensor/climate.sensor.bmp280)=0'
+              name: 'BMP280 sensor error on {HOST.NAME}'
+              priority: HIGH
+              description: 'BMP280 pressure sensor is not responding. Check wiring and I2C connection.'
+              tags:
+                - tag: scope
+                  value: availability
+      tags:
+        - tag: component
+          value: environmental
+      macros:
+        - macro: '{$SENSOR_IP}'
+          value: 192.168.1.100
+          description: 'IP address of the ESP-01 sensor board. Override per host.'
+        - macro: '{$TEMP_WARN_HIGH}'
+          value: '28'
+          description: 'Temperature warning threshold high (C)'
+        - macro: '{$TEMP_ERR_HIGH}'
+          value: '35'
+          description: 'Temperature error threshold high (C)'
+        - macro: '{$TEMP_WARN_LOW}'
+          value: '18'
+          description: 'Temperature warning threshold low (C)'
+        - macro: '{$TEMP_ERR_LOW}'
+          value: '15'
+          description: 'Temperature error threshold low (C)'
+        - macro: '{$HUM_WARN_HIGH}'
+          value: '60'
+          description: 'Humidity warning threshold high (%)'
+        - macro: '{$HUM_ERR_HIGH}'
+          value: '70'
+          description: 'Humidity error threshold high (%)'
+        - macro: '{$HUM_WARN_LOW}'
+          value: '30'
+          description: 'Humidity warning threshold low (%)'
+        - macro: '{$HUM_ERR_LOW}'
+          value: '20'
+          description: 'Humidity error threshold low (%)'
+
